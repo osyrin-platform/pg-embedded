@@ -1,0 +1,109 @@
+# pg-embedded
+
+Prebuilt, self-contained **PostgreSQL 16 + [pgvector](https://github.com/pgvector/pgvector)** bundles: one tarball per
+platform, containing a real PostgreSQL server you can start from a directory, with the `vector` extension already
+installed.
+
+They exist so a development tool can bring up a genuine PostgreSQL — vectors, HNSW indexes and all — with **no Docker,
+no package manager, and no system PostgreSQL**. Download once, run offline thereafter.
+
+## Using a bundle
+
+Grab a release asset and its `.sha256`, verify, extract:
+
+```bash
+TAG=pg16.9.0-pgvector0.8.0-r1
+BUNDLE=osy-$TAG-linux-x64.tar.gz
+
+curl -sSfLO https://github.com/osyrin-platform/pg-embedded/releases/download/$TAG/$BUNDLE
+curl -sSfLO https://github.com/osyrin-platform/pg-embedded/releases/download/$TAG/$BUNDLE.sha256
+sha256sum -c $BUNDLE.sha256
+
+mkdir pg && tar -xzf $BUNDLE -C pg
+```
+
+Then start it. Two flags are not optional:
+
+```bash
+pg/bin/initdb -D data -U postgres -A trust -E UTF8
+pg/bin/pg_ctl -D data -o "-p 5599 -h 127.0.0.1 -c unix_socket_directories=" -w start
+```
+
+`unix_socket_directories=` forces TCP-only. Postgres caps a Unix socket path at **103 bytes**, and an ordinary project
+directory will exceed it — the server then refuses to start with a message that does not obviously point at path length.
+
+Install the extension into `template1` once, and every database created afterwards inherits it, including databases made
+with `CREATE DATABASE … WITH TEMPLATE`:
+
+```bash
+psql -h 127.0.0.1 -p 5599 -U postgres -d template1 -c 'CREATE EXTENSION vector;'
+```
+
+**Verify the digest before you extract.** You are about to execute binaries out of this archive.
+
+## What is in a bundle
+
+```
+bin/     initdb, pg_ctl, postgres        <- that is all; see below
+lib/     server libraries + lib/postgresql/vector.{so,dylib}
+share/   share/postgresql/extension/vector*
+LICENSES/
+THIRD-PARTY-NOTICES.md
+```
+
+| Platform | Asset | Notes |
+|---|---|---|
+| macOS (Apple Silicon **and** Intel) | `osx-universal` | One universal binary serves both |
+| Linux x86-64 | `linux-x64` | |
+| Linux arm64 | `linux-arm64` | |
+
+## Things worth knowing
+
+**`bin/` contains only `initdb`, `pg_ctl` and `postgres`.** There is no `psql`, and no `pg_dump` or `pg_restore` — so a
+bundle cannot back up or restore a database. That is a property of these binaries, not an oversight.
+
+**`select version()` misreports the architecture on Apple Silicon.** It prints `x86_64-apple-darwin` because the
+compile-time triple is baked into both slices of a universal binary. The server really is running arm64. Never infer the
+running architecture from it.
+
+**ICU major versions differ across platforms** (60 on Linux, 68 on macOS). Collation ordering can differ between ICU
+majors, so if deterministic cross-platform sort order matters to you, pin the collation explicitly rather than assuming
+the default matches.
+
+## Building
+
+```bash
+./build-bundle.sh osx-universal      # also: linux-x64, linux-arm64
+```
+
+Needs `curl`, `tar`, `make`, a C compiler, and PostgreSQL 16 **server headers** (Homebrew `postgresql@16`, apt
+`postgresql-server-dev-16`). The bundled binaries carry no `pg_config` and no `include/`, so pgvector cannot be built
+against the tree that ships — it is compiled against separately-obtained 16.x headers and dropped in. That is safe
+because PostgreSQL's module ABI check compares `PG_VERSION_NUM / 100`, which is identical for every 16.x release.
+
+The script **refuses to pack a bundle it could not load**: before creating the tarball it starts the bundle's own
+server, runs `CREATE EXTENSION vector`, and asserts an HNSW nearest-neighbour scan returns the expected row.
+
+Versions are pinned in `versions.env`. Releases are cut by `.github/workflows/build.yml`; bump `BUNDLE_REVISION` to
+republish, since the publish step refuses to overwrite an existing tag.
+
+Tarballs are **not bit-reproducible** (`tar.gz` records mtimes), so take a digest from a published asset, never from a
+local rebuild.
+
+### Not yet built: `win-x64`
+
+pgvector on Windows requires an MSVC `nmake` build rather than the PGXS path the other platforms share.
+`./build-bundle.sh win-x64` exits with a pointer here rather than producing an untested artifact.
+
+## Licensing
+
+The build scripts in this repository are MIT-licensed (`LICENSE`).
+
+The **bundles** redistribute PostgreSQL, pgvector, OpenSSL, ICU and several other libraries as binaries. Each bundle
+carries the full licence text of every component in `LICENSES/`, and `THIRD-PARTY-NOTICES.md` maps component → licence →
+upstream source. Two macOS components (`libiconv`, `libintl`) are LGPL-2.1; they are shipped unmodified as separate
+dynamically-linked shared libraries, so they can be replaced in `lib/`.
+
+PostgreSQL binaries are repackaged, unmodified, from
+[zonky-io/embedded-postgres-binaries](https://github.com/zonkyio/embedded-postgres-binaries). This project is not
+affiliated with the PostgreSQL Global Development Group.

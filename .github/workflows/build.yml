@@ -1,0 +1,101 @@
+name: build bundles
+
+# Builds one embedded-PostgreSQL bundle per platform -- zonky's Postgres tree with
+# pgvector compiled into it -- and publishes them as a release.
+#
+# No PAT: the release is created in this repository, so the automatic GITHUB_TOKEN
+# suffices. The `permissions:` block below grants it write access even when the org
+# default for new workflows is read-only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a release (otherwise build + verify only)"
+        type: boolean
+        default: false
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { rid: osx-universal, os: macos-14 }
+          - { rid: linux-x64,     os: ubuntu-24.04 }
+          - { rid: linux-arm64,   os: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL 16 server headers (macOS)
+        if: runner.os == 'macOS'
+        run: brew install postgresql@16
+
+      - name: Install PostgreSQL 16 server headers (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-server-dev-16 postgresql-client-16
+
+      # build-bundle.sh refuses to pack a bundle it could not load: it starts the
+      # bundle's OWN server, does CREATE EXTENSION vector into template1, and checks an
+      # hnsw nearest-neighbour scan returns the right row. A broken bundle fails here,
+      # not on a user's laptop.
+      - name: Build and verify
+        run: ./build-bundle.sh ${{ matrix.rid }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.rid }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          source versions.env
+          TAG="pg${PG_VERSION}-pgvector${PGVECTOR_VERSION}-r${BUNDLE_REVISION}"
+
+          # Immutable by construction. Consumers pin the SHA-256 of these exact bytes,
+          # so an existing tag is an error, never a silent overwrite -- bump
+          # BUNDLE_REVISION instead.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists; bump BUNDLE_REVISION in versions.env." >&2
+            exit 1
+          fi
+
+          gh release create "$TAG" \
+            --title "PostgreSQL ${PG_VERSION} + pgvector ${PGVECTOR_VERSION}" \
+            --notes "Embedded PostgreSQL bundles with pgvector built in.
+
+          Each bundle is verified before publish: the bundle's own server must \`CREATE EXTENSION vector\`
+          and return a correct hnsw nearest-neighbour result.
+
+          PostgreSQL binaries are repackaged, unmodified, from [zonky](https://github.com/zonkyio/embedded-postgres-binaries).
+          Licence texts for every redistributed component ship inside each bundle under \`LICENSES/\`;
+          see \`THIRD-PARTY-NOTICES.md\`.
+
+          Verify a download with the matching \`.sha256\` file." \
+            dist/*
+
+          echo "### Published \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat dist/*.sha256 >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
