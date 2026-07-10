@@ -27,13 +27,17 @@ Then start it. Two flags are not optional:
 ```bash
 pg/bin/initdb -D data -U postgres -A trust -E UTF8 \
   --locale-provider=builtin --builtin-locale=C.UTF-8 \
-  --lc-collate=C.UTF-8 --lc-ctype=C.UTF-8
+  --lc-collate=C --lc-ctype=C
 pg/bin/pg_ctl -D data -o "-p 5599 -h 127.0.0.1 -c unix_socket_directories=" -w start
 ```
 
-The **builtin** locale provider (new in PostgreSQL 17) implements `C.UTF-8` inside the server, so collation depends on
-neither the host's libc locales nor the bundled ICU. Sort order is then identical on every platform — worth having,
-because `macOS` has no `C.UTF-8` libc locale at all and the bundled ICU major differs across platforms.
+The **builtin** locale provider (new in PostgreSQL 17) implements `C.UTF-8` inside the server, so collation *and*
+character classification depend on neither the host's libc locales nor the bundled ICU. Sort order and `upper()` are then
+identical on every platform.
+
+`--lc-collate`/`--lc-ctype` are inert under this provider — `datlocale` governs — but `initdb` still validates them
+against libc and would otherwise inherit your `LANG`. Pin them to `C`, which exists everywhere; `C.UTF-8` is *not* a
+libc locale on macOS 14 and earlier.
 
 `unix_socket_directories=` forces TCP-only. Postgres caps a Unix socket path at **103 bytes**, and an ordinary project
 directory will exceed it — the server then refuses to start with a message that does not obviously point at path length.

@@ -168,12 +168,14 @@ PSQL="${PSQL:-$("$PG_CONFIG" --bindir)/psql}"
 # with no dependence on the host's libc locales or on the bundled ICU major -- which
 # differs across platforms. This is byte-for-byte the configuration the hosted platform
 # runs, so a database created here sorts exactly as it does in production.
-# lc_collate/lc_ctype are inert under the builtin provider (datlocale governs), but they
-# are still recorded, and initdb would otherwise inherit the build machine's LANG. Pin
-# them so the cluster is byte-identical to the hosted platform on every runner.
+# Under the builtin provider, datlocale governs BOTH collation and ctype; lc_collate and
+# lc_ctype are inert metadata. Pin them to C anyway, so initdb cannot inherit the build
+# machine's LANG -- and to C rather than C.UTF-8 because initdb validates these against
+# libc, and macOS 14 has no C.UTF-8 libc locale (macOS 15+ does; the runner does not).
+# Verified against production: identical sort order, upper(), lower() and initcap().
 "$PGROOT/bin/initdb" -D "$DATA" -U postgres -A trust -E UTF8 \
   --locale-provider=builtin --builtin-locale=C.UTF-8 \
-  --lc-collate=C.UTF-8 --lc-ctype=C.UTF-8 >/dev/null
+  --lc-collate=C --lc-ctype=C >/dev/null
 
 # unix_socket_directories='' is not incidental: socket paths are capped at 103 bytes
 # and a normal project path blows past it. The bundle is TCP-loopback only.
@@ -200,20 +202,23 @@ ver="$(q smoke "SELECT extversion FROM pg_extension WHERE extname='vector';")"
 # started. A local database that sorts differently from production is the one defect
 # that would discredit a local-dev runtime.
 # datlocprovider is "char"; `"char" || text` is ambiguous in PG17 -- cast it.
-loc="$(q smoke "select datlocprovider::text||' '||datcollate||' '||datlocale from pg_database where datname='smoke';")"
+loc="$(q smoke "select datlocprovider::text||' '||datlocale from pg_database where datname='smoke';")"
 
-# And assert the OUTCOME, not just the metadata: C.UTF-8 sorts by code point, so
-# uppercase precedes lowercase. A dictionary collation would return 'a A b B'.
+# And assert the OUTCOME, not the metadata. C.UTF-8 sorts by code point, so uppercase
+# precedes lowercase; a dictionary collation would return 'a A b B'. upper() proves the
+# builtin locale supplies full Unicode ctype despite lc_ctype=C.
 srt="$(q smoke "select string_agg(w,' ' order by w) from (values ('a'),('B'),('b'),('A')) v(w);")"
+ctype="$(q smoke "select upper('é');")"
 
 "$PGROOT/bin/pg_ctl" -D "$DATA" -w stop >/dev/null
 
 [ "$got" = "1" ] || { echo "hnsw nearest-neighbour returned '$got', expected '1'" >&2; exit 1; }
 [ "$ver" = "$PGVECTOR_VERSION" ] || { echo "pg_extension says '$ver', expected '$PGVECTOR_VERSION'" >&2; exit 1; }
-[ "$loc" = "b C.UTF-8 C.UTF-8" ] || { echo "locale is '$loc', expected 'b C.UTF-8 C.UTF-8'" >&2; exit 1; }
+[ "$loc" = "b C.UTF-8" ] || { echo "locale is '$loc', expected 'b C.UTF-8' (builtin provider)" >&2; exit 1; }
 [ "$srt" = "A B a b" ] || { echo "sort order is '$srt', expected code-point order 'A B a b'" >&2; exit 1; }
+[ "$ctype" = "É" ] || { echo "upper('é') is '$ctype', expected 'É' (Unicode ctype)" >&2; exit 1; }
 echo "vector $ver loaded, inherited via template1, hnsw scan correct"
-echo "collation: builtin C.UTF-8, code-point sort — matches the hosted platform"
+echo "collation: builtin C.UTF-8 — code-point sort, Unicode ctype; matches the hosted platform"
 
 # ---------------------------------------------------------------------------
 step "Packing"
