@@ -11,7 +11,8 @@
 # executes binaries out of it, this script prints the tarball's SHA-256; consumers are
 # expected to pin that digest and verify it after download.
 #
-# Requires: curl, tar, make, a C compiler, and PG 16 server headers (pg_config).
+# Requires: curl, tar, make, a C compiler, and PostgreSQL server headers of the SAME
+# MAJOR version as PG_VERSION (pg_config).
 # Override header discovery with PG_CONFIG=/path/to/pg_config.
 
 set -euo pipefail
@@ -19,6 +20,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=versions.env
 source "$HERE/versions.env"
+
+PG_MAJOR="${PG_VERSION%%.*}"
 
 RID="${1:-}"
 OUTDIR="${2:-$HERE/dist}"
@@ -70,13 +73,13 @@ for d in bin/postgres lib/postgresql share/postgresql/extension; do
 done
 
 # ---------------------------------------------------------------------------
-step "Locating PostgreSQL 16 server headers"
+step "Locating PostgreSQL ${PG_MAJOR} server headers"
 
 if [ -z "${PG_CONFIG:-}" ]; then
   for c in \
-    /opt/homebrew/opt/postgresql@16/bin/pg_config \
-    /usr/local/opt/postgresql@16/bin/pg_config \
-    /usr/lib/postgresql/16/bin/pg_config \
+    "/opt/homebrew/opt/postgresql@${PG_MAJOR}/bin/pg_config" \
+    "/usr/local/opt/postgresql@${PG_MAJOR}/bin/pg_config" \
+    "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" \
     "$(command -v pg_config 2>/dev/null || true)"
   do
     [ -x "$c" ] && { PG_CONFIG="$c"; break; }
@@ -84,10 +87,12 @@ if [ -z "${PG_CONFIG:-}" ]; then
 fi
 [ -n "${PG_CONFIG:-}" ] && [ -x "$PG_CONFIG" ] || { echo "no pg_config found; set PG_CONFIG=" >&2; exit 1; }
 
+# Any minor of the right major works: PG_MODULE_MAGIC compares PG_VERSION_NUM / 100,
+# which is identical across every 17.x (or 16.x) release.
 HDR_VER="$("$PG_CONFIG" --version)"
 case "$HDR_VER" in
-  *" 16."*) ;;
-  *) echo "pg_config is '$HDR_VER'; PG 16 headers required (PG_MODULE_MAGIC pins PG_VERSION_NUM/100)." >&2; exit 1 ;;
+  *" ${PG_MAJOR}."*) ;;
+  *) echo "pg_config is '$HDR_VER'; PostgreSQL ${PG_MAJOR} headers required." >&2; exit 1 ;;
 esac
 echo "headers: $HDR_VER  ($PG_CONFIG)"
 echo "server:  ${PG_VERSION} (zonky)"
@@ -159,7 +164,12 @@ PORT=$(( 55000 + (RANDOM % 2000) ))
 PSQL="${PSQL:-$("$PG_CONFIG" --bindir)/psql}"
 [ -x "$PSQL" ] || { echo "no psql at $PSQL; set PSQL=" >&2; exit 1; }
 
-"$PGROOT/bin/initdb" -D "$DATA" -U postgres -A trust -E UTF8 --locale=C >/dev/null
+# The builtin locale provider (PostgreSQL 17+) implements C.UTF-8 inside the server,
+# with no dependence on the host's libc locales or on the bundled ICU major -- which
+# differs across platforms. This is byte-for-byte the configuration the hosted platform
+# runs, so a database created here sorts exactly as it does in production.
+"$PGROOT/bin/initdb" -D "$DATA" -U postgres -A trust -E UTF8 \
+  --locale-provider=builtin --builtin-locale=C.UTF-8 >/dev/null
 
 # unix_socket_directories='' is not incidental: socket paths are capped at 103 bytes
 # and a normal project path blows past it. The bundle is TCP-loopback only.
@@ -182,11 +192,19 @@ q smoke "
 got="$(q smoke "SELECT id FROM t ORDER BY e <=> '[1,2,3]' LIMIT 1;")"
 ver="$(q smoke "SELECT extversion FROM pg_extension WHERE extname='vector';")"
 
+# Assert the collation the hosted platform actually uses, not merely that the server
+# started. A local database that sorts differently from production is the one defect
+# that would discredit a local-dev runtime.
+# datlocprovider is "char"; `"char" || text` is ambiguous in PG17 -- cast it.
+loc="$(q smoke "select datlocprovider::text || ' ' || datcollate from pg_database where datname='smoke';")"
+
 "$PGROOT/bin/pg_ctl" -D "$DATA" -w stop >/dev/null
 
 [ "$got" = "1" ] || { echo "hnsw nearest-neighbour returned '$got', expected '1'" >&2; exit 1; }
 [ "$ver" = "$PGVECTOR_VERSION" ] || { echo "pg_extension says '$ver', expected '$PGVECTOR_VERSION'" >&2; exit 1; }
+[ "$loc" = "b C.UTF-8" ] || { echo "collation is '$loc', expected 'b C.UTF-8' (builtin provider)" >&2; exit 1; }
 echo "vector $ver loaded, inherited via template1, hnsw scan correct"
+echo "collation: builtin C.UTF-8 (matches the hosted platform)"
 
 # ---------------------------------------------------------------------------
 step "Packing"

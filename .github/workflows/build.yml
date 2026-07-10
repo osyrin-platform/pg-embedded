@@ -31,15 +31,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install PostgreSQL 16 server headers (macOS)
+      - name: Install PostgreSQL 17 server headers (macOS)
         if: runner.os == 'macOS'
-        run: brew install postgresql@16
+        run: brew install postgresql@17
 
-      - name: Install PostgreSQL 16 server headers (Linux)
+      - name: Install PostgreSQL 17 server headers (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq postgresql-server-dev-16 postgresql-client-16
+          sudo apt-get install -y -qq postgresql-server-dev-17 postgresql-client-17
 
       # build-bundle.sh refuses to pack a bundle it could not load: it starts the
       # bundle's OWN server, does CREATE EXTENSION vector into template1, and checks an
