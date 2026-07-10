@@ -95,12 +95,18 @@ echo "server:  ${PG_VERSION} (zonky)"
 # ---------------------------------------------------------------------------
 step "Building pgvector ${PGVECTOR_VERSION}"
 
-git clone -q --branch "v${PGVECTOR_VERSION}" --depth 1 https://github.com/pgvector/pgvector.git "$WORK/pgvector"
+git -c advice.detachedHead=false clone -q --branch "v${PGVECTOR_VERSION}" --depth 1 \
+  https://github.com/pgvector/pgvector.git "$WORK/pgvector"
 
 # OPTFLAGS="" is mandatory: pgvector defaults to -march=native, which would bake this
 # build machine's ISA into a binary that runs on other people's CPUs. Nothing at
 # runtime or in any test would catch that — it surfaces as SIGILL on a user's laptop.
-MAKE_ARGS=(PG_CONFIG="$PG_CONFIG" OPTFLAGS="")
+#
+# with_llvm=no because the Postgres we ship has no JIT provider (there is no
+# llvmjit.so in the tree), so the LLVM bitcode PGXS would emit could never be loaded,
+# and we install none of it. Debian/Ubuntu's server headers are configured
+# with_llvm=yes and would demand a clang that need not exist on the build machine.
+MAKE_ARGS=(PG_CONFIG="$PG_CONFIG" OPTFLAGS="" with_llvm=no)
 
 if [ "$RID" = "osx-universal" ]; then
   # PGXS links modules with `-bundle_loader $(bindir)/postgres`. Homebrew's postgres is
