@@ -26,7 +26,8 @@ Then start it. Two flags are not optional:
 
 ```bash
 pg/bin/initdb -D data -U postgres -A trust -E UTF8 \
-  --locale-provider=builtin --builtin-locale=C.UTF-8
+  --locale-provider=builtin --builtin-locale=C.UTF-8 \
+  --lc-collate=C.UTF-8 --lc-ctype=C.UTF-8
 pg/bin/pg_ctl -D data -o "-p 5599 -h 127.0.0.1 -c unix_socket_directories=" -w start
 ```
 

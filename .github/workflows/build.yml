@@ -35,9 +35,17 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install postgresql@17
 
+      # Ubuntu 24.04 ships PostgreSQL 16 in its own archive; 17 needs the PGDG repo,
+      # which publishes both amd64 and arm64 for noble.
       - name: Install PostgreSQL 17 server headers (Linux)
         if: runner.os == 'Linux'
         run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+            https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-server-dev-17 postgresql-client-17
 
