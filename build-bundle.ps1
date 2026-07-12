@@ -120,11 +120,16 @@ API char *libintl_bind_textdomain_codeset(const char *d, const char *cs){ (void)
     }
   }
   Write-Host "runtime DLL closure ($($needed.Count) of $($bundled.Count)): $(( $needed | Sort-Object ) -join ', ')"
+  # Remove UNUSED (outside the closure) DLLs whose licences the bundle's LICENSES/ do not cover, rather than carry extra
+  # attribution for code we never load: libiconv/libxml2 (dropped with libintl), plus curl (libcurl), the mingw-w64
+  # runtime (libwinpthread) and wxWidgets (wxbase* — copyleft-flavoured wxWindows licence). zonky ships these on Windows
+  # but nothing we run imports them. Everything still shipped is covered by the existing licence texts.
+  $dropPatterns = @('libiconv-2.dll','libxml2.dll','libcurl.dll','libwinpthread-1.dll','wxbase*.dll','wxmsw*.dll')
   $removed = @()
-  foreach ($n in 'libiconv-2.dll','libxml2.dll') {
-    if ($bundled.ContainsKey($n) -and -not $needed.Contains($n)) { Remove-Item $bundled[$n] -Force; $removed += $n }
+  foreach ($f in (Get-ChildItem $PGTREE -Recurse -Include $dropPatterns)) {
+    if (-not $needed.Contains($f.Name.ToLower())) { Remove-Item $f.FullName -Force; $removed += $f.Name }
   }
-  Write-Host "removed (now unreachable): $(if ($removed) { $removed -join ', ' } else { '(none)' })"
+  Write-Host "removed (unused, uncovered): $(if ($removed) { $removed -join ', ' } else { '(none)' })"
   if ($needed.Contains('libiconv-2.dll')) { throw "libiconv still reachable after stubbing libintl." }
   if ((Deps "$PGTREE\bin\libintl-9.dll") -contains 'libiconv-2.dll') { throw "the stub libintl still imports libiconv." }
   Write-Host "LGPL-free: libintl replaced with a no-op stub; libiconv removed"
