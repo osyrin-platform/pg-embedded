@@ -102,10 +102,14 @@ republish, since the publish step refuses to overwrite an existing tag.
 Tarballs are **not bit-reproducible** (`tar.gz` records mtimes), so take a digest from a published asset, never from a
 local rebuild.
 
-### Not yet built: `win-x64`
+### `win-x64`
 
-pgvector on Windows requires an MSVC `nmake` build rather than the PGXS path the other platforms share.
-`./build-bundle.sh win-x64` exits with a pointer here rather than producing an untested artifact.
+Windows uses a separate build script, **`build-bundle.ps1`** (PowerShell), because pgvector there needs an MSVC
+`nmake /F Makefile.win` build rather than the PGXS path the other platforms share — and the runner needs a PostgreSQL 17
+install (`-PgRoot`) for headers, import libs and `psql`. It is LGPL-free like the others: zonky's Windows Postgres
+hard-links GNU `libintl` (message translation) and pulls in GNU `libiconv` only through it, so the build replaces
+`libintl-9.dll` with a permissive **no-op stub** (NLS is off locally → messages are already untranslated) and drops
+`libiconv`. The `build-bundle.sh` win-x64 arm still points here; the CI (`build.yml`) runs the `.ps1` on `windows-latest`.
 
 ## Licensing
 
