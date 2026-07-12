@@ -98,10 +98,20 @@ try {
       if ($bundled.ContainsKey($d) -and $needed.Add($d)) { $queue.Enqueue($bundled[$d]) }
     }
   }
-  Write-Host "runtime DLL closure: $($needed.Count) of $($bundled.Count) bundled DLLs reachable"
+  Write-Host "runtime DLL closure ($($needed.Count) of $($bundled.Count)): $(( $needed | Sort-Object ) -join ', ')"
   $lgpl = @('libiconv-2.dll','libintl-9.dll')
   $stillLgpl = $lgpl | Where-Object { $needed.Contains($_) }
-  if ($stillLgpl) { throw "LGPL lib(s) still reachable at runtime: $($stillLgpl -join ', '). Do the MIT win-iconv swap rather than ship copyleft." }
+  if ($stillLgpl) {
+    # Diagnostic: who DIRECTLY imports each still-reachable LGPL lib (across every exe/dll
+    # in the tree), so we know exactly what to swap (win-iconv / proxy-libintl).
+    $allPe = @()
+    $allPe += (Get-ChildItem $PGTREE -Recurse -Include *.exe,*.dll)
+    foreach ($lg in $stillLgpl) {
+      $importers = $allPe | Where-Object { (Deps $_.FullName) -contains $lg } | ForEach-Object { $_.Name }
+      Write-Host "  $lg  <-  directly imported by: $(($importers | Sort-Object -Unique) -join ', ')"
+    }
+    throw "LGPL lib(s) still reachable at runtime: $($stillLgpl -join ', '). Swap for permissive equivalents (win-iconv / proxy-libintl) rather than ship copyleft."
+  }
   # Delete the LGPL libs (unreachable) plus libxml2 if it too is unreachable (its only
   # consumer is XML, which we never use) -- keep the tree honest, not just licence-clean.
   $removed = @()
