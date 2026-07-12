@@ -27,6 +27,7 @@ jobs:
           - { rid: osx-universal, os: macos-14 }
           - { rid: linux-x64,     os: ubuntu-24.04 }
           - { rid: linux-arm64,   os: ubuntu-24.04-arm }
+          - { rid: win-x64,       os: windows-latest }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -34,6 +35,13 @@ jobs:
       - name: Install PostgreSQL 17 server headers (macOS)
         if: runner.os == 'macOS'
         run: brew install postgresql@17
+
+      # Windows needs the MSVC/nmake build (build-bundle.ps1). A full PostgreSQL 17
+      # install supplies the headers, import libs and psql the build needs; the runner
+      # already has the MSVC toolchain (vcvars64).
+      - name: Install PostgreSQL 17 (Windows)
+        if: runner.os == 'Windows'
+        run: choco install postgresql17 --no-progress -y --params '/Password:postgres'
 
       # Ubuntu 24.04 ships PostgreSQL 16 in its own archive; 17 needs the PGDG repo,
       # which publishes both amd64 and arm64 for noble.
@@ -49,12 +57,18 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-server-dev-17 postgresql-client-17
 
-      # build-bundle.sh refuses to pack a bundle it could not load: it starts the
-      # bundle's OWN server, does CREATE EXTENSION vector into template1, and checks an
-      # hnsw nearest-neighbour scan returns the right row. A broken bundle fails here,
-      # not on a user's laptop.
-      - name: Build and verify
+      # Both build scripts refuse to pack a bundle they could not load: they start the
+      # bundle's OWN server, do CREATE EXTENSION vector into template1, and check an hnsw
+      # nearest-neighbour scan returns the right row. A broken bundle fails here, not on a
+      # user's laptop.
+      - name: Build and verify (unix)
+        if: runner.os != 'Windows'
         run: ./build-bundle.sh ${{ matrix.rid }}
+
+      - name: Build and verify (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./build-bundle.ps1 -PgRoot 'C:\Program Files\PostgreSQL\17'
 
       - uses: actions/upload-artifact@v7
         with:
