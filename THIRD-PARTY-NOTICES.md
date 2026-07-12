@@ -4,11 +4,16 @@ This bundle redistributes PostgreSQL and its dependencies as **binaries**, toget
 full licence text of every component is in the `LICENSES/` directory beside this file.
 
 The PostgreSQL binaries are repackaged from
-[zonky-io/embedded-postgres-binaries](https://github.com/zonkyio/embedded-postgres-binaries). They are unmodified
-**except on macOS**, where the bundled GNU `libintl` (unused) and GNU `libiconv` are removed and `libxml2` is repointed
-to the system `/usr/lib/libiconv.2.dylib` — so this bundle redistributes **no LGPL-licensed code** on any platform
-(Linux links glibc's iconv/gettext and never shipped them). This bundle also adds the pgvector extension, compiled
-against PostgreSQL 17 server headers.
+[zonky-io/embedded-postgres-binaries](https://github.com/zonkyio/embedded-postgres-binaries). They are unmodified except
+that the **LGPL** components are removed so this bundle redistributes **no LGPL-licensed code on any platform**:
+
+- **macOS** — GNU `libintl` (unused) and GNU `libiconv` are deleted, and `libxml2` is repointed to the system
+  `/usr/lib/libiconv.2.dylib`.
+- **Windows** — GNU `libintl-9.dll` is replaced with a permissive **no-op stub** we build (message translation is off
+  locally, so it returns messages untranslated — the existing behaviour), which drops GNU `libiconv` (its only consumer).
+- **Linux** — links glibc's iconv/gettext and never shipped either.
+
+This bundle also adds the pgvector extension, compiled against PostgreSQL 17 server headers.
 
 Every bundle carries the **union** of these notices, not a per-platform subset. Shipping one licence text too many is
 harmless; omitting one is a compliance bug. The "Platforms" column records where each component actually appears.
