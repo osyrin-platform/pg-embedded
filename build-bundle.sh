@@ -140,18 +140,56 @@ cp "$WORK/pgvector/vector.control"     "$PGROOT/share/postgresql/extension/"
 cp "$WORK/pgvector"/sql/vector--*.sql  "$PGROOT/share/postgresql/extension/"
 
 # ---------------------------------------------------------------------------
+step "Removing the LGPL libraries (macOS)"
+
+# The only LGPL-2.1 components in any bundle are macOS's bundled GNU libintl and libiconv;
+# the Linux trees link glibc's gettext/iconv and ship neither (verified). Dropping them
+# removes the product's sole copyleft obligation entirely -- and needs NO Postgres rebuild:
+#   - libintl is linked by nothing in the tree (verified with otool), i.e. dead weight.
+#   - libiconv is used only by libxml2, via a relocatable @loader_path path; macOS ships an
+#     ABI-compatible /usr/lib/libiconv.2.dylib, so we repoint libxml2 at the system copy.
+# install_name_tool invalidates the signature and arm64 dylibs must be signed to load, so
+# each edited dylib is re-signed ad-hoc. The smoke test below then parses XML -- including a
+# non-UTF-8 document, which forces libxml2 through iconv -- against the system library, so a
+# break here fails the build rather than a user's laptop.
+if [ "$RID" = "osx-universal" ]; then
+  rm -f "$PGROOT/lib/libintl.8.dylib"
+  for f in "$PGROOT"/lib/*.dylib "$PGROOT"/lib/postgresql/*.dylib; do
+    [ -f "$f" ] || continue
+    if otool -L "$f" | grep -q '@loader_path/../lib/libiconv.2.dylib'; then
+      install_name_tool -change @loader_path/../lib/libiconv.2.dylib /usr/lib/libiconv.2.dylib "$f"
+      codesign -f -s - "$f"
+    fi
+  done
+  rm -f "$PGROOT/lib/libiconv.2.dylib"
+
+  # Nothing may still reference libintl (that would mean it was NOT dead weight), and every
+  # remaining libiconv reference must be the SYSTEM one -- no bundled copy left dangling.
+  refs="$(find "$PGROOT/bin" "$PGROOT/lib" -type f -exec otool -L {} + 2>/dev/null)"
+  if grep -q 'libintl' <<<"$refs"; then
+    echo "libintl is still referenced after removal -- it was not unused; do not ship." >&2; exit 1
+  fi
+  if grep 'libiconv' <<<"$refs" | grep -qv '/usr/lib/libiconv'; then
+    echo "a bundled libiconv reference remains -- do not ship." >&2; exit 1
+  fi
+  echo "libintl deleted; libxml2 -> /usr/lib/libiconv.2.dylib; bundled libiconv deleted"
+fi
+
+# ---------------------------------------------------------------------------
 step "Baking third-party licence notices into the bundle"
 
-# We redistribute PostgreSQL, OpenSSL, ICU, libiconv and friends as binaries. zonky's
-# tree carries no licence text of its own, so the obligation to retain copyright
-# notices is ours to meet. Every bundle gets the union of the texts, not a per-platform
-# subset: shipping one licence too many is harmless, omitting one is a compliance bug.
+# We redistribute PostgreSQL, OpenSSL, ICU and friends as binaries. zonky's tree carries
+# no licence text of its own, so the obligation to retain copyright notices is ours to
+# meet. Every bundle gets the union of the texts, not a per-platform subset: shipping one
+# licence too many is harmless, omitting one is a compliance bug. (No LGPL text ships any
+# more -- the two LGPL libs were removed from the macOS tree above, and Linux never had
+# them.)
 mkdir -p "$PGROOT/LICENSES"
 cp "$HERE/licenses/"*.txt "$PGROOT/LICENSES/"
 cp "$WORK/pgvector/LICENSE" "$PGROOT/LICENSES/pgvector.txt"   # version-accurate, from the source we just built
 cp "$HERE/THIRD-PARTY-NOTICES.md" "$PGROOT/"
 
-for required in postgresql.txt pgvector.txt openssl.txt lgpl-2.1.txt; do
+for required in postgresql.txt pgvector.txt openssl.txt; do
   [ -s "$PGROOT/LICENSES/$required" ] || { echo "missing licence text: $required" >&2; exit 1; }
 done
 echo "$(ls "$PGROOT/LICENSES" | wc -l | tr -d ' ') licence texts + THIRD-PARTY-NOTICES.md"
@@ -210,6 +248,12 @@ loc="$(q smoke "select datlocprovider::text||' '||datlocale from pg_database whe
 srt="$(q smoke "select string_agg(w,' ' order by w) from (values ('a'),('B'),('b'),('A')) v(w);")"
 ctype="$(q smoke "select upper('é');")"
 
+# XML must work: libxml2 has to load (proving its libiconv symbols resolve -- against the
+# SYSTEM libiconv on macOS after the relink above) and convert charsets. xmlx exercises the
+# load + an xpath; xmliso parses a non-UTF-8-declared document, forcing the iconv path.
+xmlx="$(q smoke "select (xpath('/a/text()','<a>ok</a>'::xml))[1]::text;")"
+xmliso="$(q smoke "select xml_is_well_formed(convert_from(decode('3c3f786d6c2076657273696f6e3d22312e302220656e636f64696e673d2249534f2d383835392d31223f3e3c613ee93c2f613e','hex'),'LATIN1'));")"
+
 "$PGROOT/bin/pg_ctl" -D "$DATA" -w stop >/dev/null
 
 [ "$got" = "1" ] || { echo "hnsw nearest-neighbour returned '$got', expected '1'" >&2; exit 1; }
@@ -217,8 +261,11 @@ ctype="$(q smoke "select upper('é');")"
 [ "$loc" = "b C.UTF-8" ] || { echo "locale is '$loc', expected 'b C.UTF-8' (builtin provider)" >&2; exit 1; }
 [ "$srt" = "A B a b" ] || { echo "sort order is '$srt', expected code-point order 'A B a b'" >&2; exit 1; }
 [ "$ctype" = "É" ] || { echo "upper('é') is '$ctype', expected 'É' (Unicode ctype)" >&2; exit 1; }
+[ "$xmlx" = "ok" ] || { echo "xpath returned '$xmlx', expected 'ok' — libxml2 failed to load/run" >&2; exit 1; }
+[ "$xmliso" = "t" ] || { echo "non-UTF-8 XML parse returned '$xmliso', expected 't' — libxml2/iconv broken" >&2; exit 1; }
 echo "vector $ver loaded, inherited via template1, hnsw scan correct"
 echo "collation: builtin C.UTF-8 — code-point sort, Unicode ctype; matches the hosted platform"
+echo "libxml2 loads + parses (incl. non-UTF-8 → iconv); on macOS via the system libiconv"
 
 # ---------------------------------------------------------------------------
 step "Packing"

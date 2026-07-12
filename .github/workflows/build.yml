@@ -97,7 +97,9 @@ jobs:
           Each bundle is verified before publish: the bundle's own server must \`CREATE EXTENSION vector\`
           and return a correct hnsw nearest-neighbour result.
 
-          PostgreSQL binaries are repackaged, unmodified, from [zonky](https://github.com/zonkyio/embedded-postgres-binaries).
+          PostgreSQL binaries are repackaged from [zonky](https://github.com/zonkyio/embedded-postgres-binaries),
+          unmodified except that the macOS tree's LGPL libs are removed (libintl deleted; libxml2 repointed to the
+          system libiconv), so no bundle redistributes LGPL-licensed code.
           Licence texts for every redistributed component ship inside each bundle under \`LICENSES/\`;
           see \`THIRD-PARTY-NOTICES.md\`.
 

@@ -113,9 +113,10 @@ The build scripts in this repository are MIT-licensed (`LICENSE`).
 
 The **bundles** redistribute PostgreSQL, pgvector, OpenSSL, ICU and several other libraries as binaries. Each bundle
 carries the full licence text of every component in `LICENSES/`, and `THIRD-PARTY-NOTICES.md` maps component → licence →
-upstream source. Two macOS components (`libiconv`, `libintl`) are LGPL-2.1; they are shipped unmodified as separate
-dynamically-linked shared libraries, so they can be replaced in `lib/`.
+upstream source. **No bundle redistributes any LGPL-licensed code**: the macOS tree's GNU `libintl` (unused) and
+`libiconv` are removed at build time — `libxml2` is repointed to macOS's own `/usr/lib/libiconv.2.dylib` — and the Linux
+trees link glibc's iconv/gettext and never shipped them.
 
-PostgreSQL binaries are repackaged, unmodified, from
-[zonky-io/embedded-postgres-binaries](https://github.com/zonkyio/embedded-postgres-binaries). This project is not
-affiliated with the PostgreSQL Global Development Group.
+PostgreSQL binaries are repackaged from
+[zonky-io/embedded-postgres-binaries](https://github.com/zonkyio/embedded-postgres-binaries), unmodified except for that
+macOS LGPL-removal relink. This project is not affiliated with the PostgreSQL Global Development Group.

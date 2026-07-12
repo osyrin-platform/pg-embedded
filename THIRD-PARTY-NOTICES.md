@@ -3,9 +3,12 @@
 This bundle redistributes PostgreSQL and its dependencies as **binaries**, together with the pgvector extension. The
 full licence text of every component is in the `LICENSES/` directory beside this file.
 
-The PostgreSQL binaries are repackaged, unmodified, from
-[zonky-io/embedded-postgres-binaries](https://github.com/zonkyio/embedded-postgres-binaries). The only thing this bundle
-adds is the pgvector extension, compiled against PostgreSQL 16 server headers.
+The PostgreSQL binaries are repackaged from
+[zonky-io/embedded-postgres-binaries](https://github.com/zonkyio/embedded-postgres-binaries). They are unmodified
+**except on macOS**, where the bundled GNU `libintl` (unused) and GNU `libiconv` are removed and `libxml2` is repointed
+to the system `/usr/lib/libiconv.2.dylib` — so this bundle redistributes **no LGPL-licensed code** on any platform
+(Linux links glibc's iconv/gettext and never shipped them). This bundle also adds the pgvector extension, compiled
+against PostgreSQL 17 server headers.
 
 Every bundle carries the **union** of these notices, not a per-platform subset. Shipping one licence text too many is
 harmless; omitting one is a compliance bug. The "Platforms" column records where each component actually appears.
@@ -26,16 +29,10 @@ harmless; omitting one is a compliance bug. The "Platforms" column records where
 | libedit | BSD-3-Clause | `libedit.txt` | macOS | <https://www.thrysoee.dk/editline/> |
 | MIT Kerberos (`krb5`, `gssapi_krb5`, `com_err`, `k5crypto`, `krb5support`) | MIT | `krb5.txt` | macOS | <https://web.mit.edu/kerberos/> |
 | util-linux `libuuid` | BSD-3-Clause | `libuuid-bsd3.txt` | macOS | <https://github.com/util-linux/util-linux> |
-| GNU libiconv | **LGPL-2.1-or-later** | `lgpl-2.1.txt` | macOS | <https://www.gnu.org/software/libiconv/> |
-| GNU gettext runtime (`libintl`) | **LGPL-2.1-or-later** | `lgpl-2.1.txt` | macOS | <https://www.gnu.org/software/gettext/> |
 
-## A note on the LGPL components
+## No LGPL components
 
-`libiconv` and `libintl` are covered by the GNU Lesser General Public License, version 2.1 or later. They are
-redistributed here **unmodified**, as **separate dynamically-linked shared libraries** (`libiconv.2.dylib`,
-`libintl.8.dylib`) rather than statically linked into any executable.
-
-A recipient may therefore replace either library with a modified version by substituting the file in `lib/`, which is
-the relinking freedom the LGPL exists to protect. Complete corresponding source for both libraries is available from the
-upstream projects linked above; the specific builds are those produced by the zonky project, whose build definition is
-public at the repository linked at the top of this file.
+Earlier revisions of the macOS bundle carried GNU `libiconv` and GNU `libintl` (both LGPL-2.1). As of bundle revision 2
+they are removed: `libintl` was linked by nothing in the tree, and `libxml2` (its only `libiconv` consumer) is repointed
+to macOS's own `/usr/lib/libiconv.2.dylib`. The Linux bundles link glibc's iconv/gettext and never shipped either. No
+bundle now redistributes any LGPL-licensed code.
