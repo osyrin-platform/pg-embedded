@@ -104,13 +104,28 @@ try {
   if ($stillLgpl) {
     # Diagnostic: who DIRECTLY imports each still-reachable LGPL lib (across every exe/dll
     # in the tree), so we know exactly what to swap (win-iconv / proxy-libintl).
-    $allPe = @()
-    $allPe += (Get-ChildItem $PGTREE -Recurse -Include *.exe,*.dll)
-    foreach ($lg in $stillLgpl) {
-      $importers = $allPe | Where-Object { (Deps $_.FullName) -contains $lg } | ForEach-Object { $_.Name }
-      Write-Host "  $lg  <-  directly imported by: $(($importers | Sort-Object -Unique) -join ', ')"
+    $allPe = @(Get-ChildItem $PGTREE -Recurse -Include *.exe,*.dll)
+    # Which symbols do the reachable consumers import from libintl? That is exactly the
+    # surface the no-op stub must export (gettext-family → no-op; any *printf → forward).
+    function ImportsFrom($file,$dll){
+      $lines = dumpbin /imports $file 2>$null
+      $in=$false; $syms=@()
+      foreach($ln in $lines){
+        if($ln -match "^\s+\S*$([regex]::Escape($dll))\s*$"){ $in=$true; continue }
+        if($in){
+          if($ln -match '^\s+\S+\.dll\s*$'){ break }                 # next dll section
+          if($ln -match '^\s+[0-9A-Fa-f]+\s+([A-Za-z_]\w+)\s*$'){ $syms+=$Matches[1] }
+        }
+      }
+      $syms
     }
-    throw "LGPL lib(s) still reachable at runtime: $($stillLgpl -join ', '). Swap for permissive equivalents (win-iconv / proxy-libintl) rather than ship copyleft."
+    foreach ($lg in $stillLgpl) {
+      $importers = $allPe | Where-Object { (Deps $_.FullName) -contains $lg }
+      Write-Host "  $lg  <-  imported by: $(($importers.Name | Sort-Object -Unique) -join ', ')"
+      $syms = @(); foreach($p in $importers){ $syms += ImportsFrom $p.FullName $lg }
+      Write-Host "  $lg  symbols needed ($(($syms|Sort-Object -Unique).Count)): $(($syms | Sort-Object -Unique) -join ', ')"
+    }
+    throw "LGPL lib(s) still reachable at runtime: $($stillLgpl -join ', '). Building the no-op stub from the symbol list above."
   }
   # Delete the LGPL libs (unreachable) plus libxml2 if it too is unreachable (its only
   # consumer is XML, which we never use) -- keep the tree honest, not just licence-clean.
