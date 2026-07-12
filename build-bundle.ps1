@@ -75,20 +75,41 @@ try {
   Copy-Item "$WORK\pgvector\vector.control"    "$PGTREE\share\extension\"
   Copy-Item "$WORK\pgvector\sql\vector--*.sql" "$PGTREE\share\extension\"
 
-  # --- LGPL elimination (data-driven) ----------------------------------------
-  step "Eliminating the LGPL libraries (data-driven via dumpbin)"
-  # The GNU libiconv/libintl are the only LGPL components. We use no PG XML
-  # (libxml2 -> libiconv) and no NLS (libintl), so they should never load. Prove it:
-  # compute the transitive DLL closure actually reachable from the executables we run
-  # (postgres/initdb/pg_ctl) plus vector.dll (the only extension we load). Anything
-  # outside that closure is never mapped and is safe to delete. STRICT: if an LGPL lib
-  # IS reachable, fail -- don't silently ship copyleft; swap in MIT win-iconv instead.
+  # --- LGPL removal: stub out libintl, drop libiconv -------------------------
+  step "Removing LGPL (stub out libintl; drop libiconv)"
+  # On Windows the GNU libintl (message translation) is hard-linked by postgres/initdb/
+  # pg_ctl, and GNU libiconv is pulled in ONLY by libintl (libxml2 doesn't use it here).
+  # We run NLS-off (C locale), so gettext only ever returns messages untranslated -- which
+  # is precisely what a no-op stub returns. Replacing libintl-9.dll with a tiny permissive
+  # no-op DLL (the 7 gettext symbols the consumers import) removes BOTH LGPL libs at once,
+  # with zero behaviour change. x64-only, so exported names are undecorated; /MT static-links
+  # the CRT so the stub adds no vcruntime/ucrt dependency the (MinGW-built) tree lacks.
+  $stub = @'
+/* No-op libintl-9.dll. NLS is off locally, so these return the message untranslated --
+   the existing behaviour -- and carry NO libiconv dependency. From build-bundle.ps1. */
+#define API __declspec(dllexport)
+API char *libintl_gettext(const char *msgid){ return (char*)msgid; }
+API char *libintl_dgettext(const char *d, const char *msgid){ (void)d; return (char*)msgid; }
+API char *libintl_ngettext(const char *m1, const char *m2, unsigned long n){ return (char*)(n==1?m1:m2); }
+API char *libintl_dngettext(const char *d, const char *m1, const char *m2, unsigned long n){ (void)d; return (char*)(n==1?m1:m2); }
+API char *libintl_textdomain(const char *d){ return (char*)(d?d:"messages"); }
+API char *libintl_bindtextdomain(const char *d, const char *dir){ (void)d; return (char*)dir; }
+API char *libintl_bind_textdomain_codeset(const char *d, const char *cs){ (void)d; return (char*)cs; }
+'@
+  Set-Content -Path "$WORK\libintl_stub.c" -Value $stub -Encoding ascii
+  Push-Location $WORK
+  try { cl /nologo /O2 /MT /LD libintl_stub.c /Fe:libintl-9.dll } finally { Pop-Location }
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$WORK\libintl-9.dll")) { throw "stub libintl-9.dll build failed." }
+  Get-ChildItem $PGTREE -Recurse -Filter 'libintl-9.dll' | ForEach-Object { Copy-Item "$WORK\libintl-9.dll" $_.FullName -Force }
+
+  # Recompute the runtime DLL closure now that libintl is the dependency-free stub, drop what
+  # is no longer reachable (libiconv -- its only consumer was GNU libintl -- and libxml2 if
+  # unused), and assert nothing GNU-LGPL remains reachable.
   $bundled = @{}
   Get-ChildItem $PGTREE -Recurse -Filter *.dll | ForEach-Object { $bundled[$_.Name.ToLower()] = $_.FullName }
   function Deps($file) {
     (dumpbin /dependents $file 2>$null) |
-      Select-String -Pattern '^\s+(\S+\.dll)\s*$' |
-      ForEach-Object { $_.Matches[0].Groups[1].Value.ToLower() }
+      Select-String -Pattern '^\s+(\S+\.dll)\s*$' | ForEach-Object { $_.Matches[0].Groups[1].Value.ToLower() }
   }
   $needed = [System.Collections.Generic.HashSet[string]]::new()
   $queue  = [System.Collections.Generic.Queue[string]]::new()
@@ -99,41 +120,14 @@ try {
     }
   }
   Write-Host "runtime DLL closure ($($needed.Count) of $($bundled.Count)): $(( $needed | Sort-Object ) -join ', ')"
-  $lgpl = @('libiconv-2.dll','libintl-9.dll')
-  $stillLgpl = $lgpl | Where-Object { $needed.Contains($_) }
-  if ($stillLgpl) {
-    # Diagnostic: who DIRECTLY imports each still-reachable LGPL lib (across every exe/dll
-    # in the tree), so we know exactly what to swap (win-iconv / proxy-libintl).
-    $allPe = @(Get-ChildItem $PGTREE -Recurse -Include *.exe,*.dll)
-    # Which symbols do the reachable consumers import from libintl? That is exactly the
-    # surface the no-op stub must export (gettext-family → no-op; any *printf → forward).
-    function ImportsFrom($file,$dll){
-      $lines = dumpbin /imports $file 2>$null
-      $in=$false; $syms=@()
-      foreach($ln in $lines){
-        if($ln -match "^\s+\S*$([regex]::Escape($dll))\s*$"){ $in=$true; continue }
-        if($in){
-          if($ln -match '^\s+\S+\.dll\s*$'){ break }                 # next dll section
-          if($ln -match '^\s+[0-9A-Fa-f]+\s+([A-Za-z_]\w+)\s*$'){ $syms+=$Matches[1] }
-        }
-      }
-      $syms
-    }
-    foreach ($lg in $stillLgpl) {
-      $importers = $allPe | Where-Object { (Deps $_.FullName) -contains $lg }
-      Write-Host "  $lg  <-  imported by: $(($importers.Name | Sort-Object -Unique) -join ', ')"
-      $syms = @(); foreach($p in $importers){ $syms += ImportsFrom $p.FullName $lg }
-      Write-Host "  $lg  symbols needed ($(($syms|Sort-Object -Unique).Count)): $(($syms | Sort-Object -Unique) -join ', ')"
-    }
-    throw "LGPL lib(s) still reachable at runtime: $($stillLgpl -join ', '). Building the no-op stub from the symbol list above."
-  }
-  # Delete the LGPL libs (unreachable) plus libxml2 if it too is unreachable (its only
-  # consumer is XML, which we never use) -- keep the tree honest, not just licence-clean.
   $removed = @()
-  foreach ($n in @($lgpl + 'libxml2.dll')) {
+  foreach ($n in 'libiconv-2.dll','libxml2.dll') {
     if ($bundled.ContainsKey($n) -and -not $needed.Contains($n)) { Remove-Item $bundled[$n] -Force; $removed += $n }
   }
-  Write-Host "removed (unreachable): $(if ($removed) { $removed -join ', ' } else { '(none)' })"
+  Write-Host "removed (now unreachable): $(if ($removed) { $removed -join ', ' } else { '(none)' })"
+  if ($needed.Contains('libiconv-2.dll')) { throw "libiconv still reachable after stubbing libintl." }
+  if ((Deps "$PGTREE\bin\libintl-9.dll") -contains 'libiconv-2.dll') { throw "the stub libintl still imports libiconv." }
+  Write-Host "LGPL-free: libintl replaced with a no-op stub; libiconv removed"
 
   # --- licences (no LGPL ships) ----------------------------------------------
   step "Baking third-party licence notices"
