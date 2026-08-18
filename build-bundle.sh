@@ -131,6 +131,63 @@ if [ "$RID" = "osx-universal" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# THE GLIBC FLOOR — the same class of bug as -march=native above, one library over.
+#
+# We compile exactly ONE file into this bundle, and it is the only one whose build MACHINE
+# can leak into the artifact. zonky's own binaries are built for a very old glibc; if our
+# module demands a newer one, the bundle stops working on every distro in between — and it
+# fails at CREATE EXTENSION, deep inside a server start, on a user's machine.
+#
+# MEASURED 2026-08-18, r3 built on ubuntu-24.04 (glibc 2.39):
+#   bin/postgres           needs at most GLIBC_2.25
+#   lib/postgresql/vector.so needs         GLIBC_2.38   ← one symbol, __isoc23_strtol
+# On debian:bookworm (glibc 2.36) Postgres started and then died:
+#   could not load library ".../vector.so": version `GLIBC_2.38' not found
+# which locked the local runtime out of Debian 12 AND Ubuntu 22.04 — two of the commonest
+# Linux installs there are. Rebuilt on debian:bullseye (glibc 2.31) the same source needs
+# GLIBC_2.14, i.e. lower than the server it loads into.
+#
+# ⚠ A COMPILE FLAG CANNOT FIX THIS, which is worth stating because it is the first thing
+# anyone tries: `__isoc23_strtol` comes from glibc 2.38's own stdlib.h, which enables the
+# C23 remap for _GNU_SOURCE — and PostgreSQL always defines _GNU_SOURCE. `-std=gnu17`
+# changes nothing (measured). The build environment IS the fix; this check is what makes
+# forgetting that impossible.
+#
+# The bar is SELF-CALIBRATING on purpose: not a constant someone has to remember to raise,
+# but the requirement of the very executable this module gets loaded into. The invariant is
+# "our one compiled file must never narrow the platforms the shipped server already runs on".
+if [ "$ZONKY_PLATFORM" = "linux" ]; then
+  step "Checking the module's glibc floor against the server's"
+
+  # `objdump -T` over an ELF's dynamic symbols; the version tags are what a loader resolves.
+  # Missing binutils is a hard failure, never a skipped check — a guard that quietly does not
+  # run is how r3 shipped.
+  command -v objdump >/dev/null || { echo "objdump (binutils) is required to check the glibc floor" >&2; exit 1; }
+
+  max_glibc() {   # highest GLIBC_x.y required by $1, or 0.0 when it requires none
+    objdump -T "$1" 2>/dev/null | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1
+  }
+  server_needs="$(max_glibc "$PGROOT/bin/postgres")"
+  module_needs="$(max_glibc "$WORK/pgvector/$MODULE")"
+  echo "server needs glibc ${server_needs:-none}; module needs glibc ${module_needs:-none}"
+
+  if [ -n "$module_needs" ] && [ -n "$server_needs" ] \
+     && [ "$(printf '%s\n%s\n' "$server_needs" "$module_needs" | sort -V | tail -1)" != "$server_needs" ]; then
+    cat >&2 <<MSG
+pgvector requires glibc ${module_needs}, but the PostgreSQL binaries this bundle ships
+require only ${server_needs}. Publishing this would lock the local runtime out of every
+distro between the two — the failure is 'could not load library vector.so: version
+GLIBC_${module_needs} not found', raised inside a server start, on a user's machine.
+
+Build this module on an older toolchain: debian:bullseye (glibc 2.31) with the PGDG
+postgresql-server-dev-${PG_MAJOR} package produces a module needing only glibc 2.14.
+A compile flag will not do it — glibc's own headers make the choice (see the comment above).
+MSG
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 step "Installing pgvector into the Postgres tree"
 
 # SHAREDIR is share/postgresql, PKGLIBDIR is lib/postgresql — not the share/extension

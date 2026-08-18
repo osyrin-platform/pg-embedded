@@ -24,12 +24,34 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { rid: osx-universal, os: macos-14 }
-          - { rid: linux-x64,     os: ubuntu-24.04 }
-          - { rid: linux-arm64,   os: ubuntu-24.04-arm }
-          - { rid: win-x64,       os: windows-latest }
+          - { rid: osx-universal, os: macos-14,          container: '' }
+          # ⚠ THE LINUX BUNDLES BUILD IN AN OLD CONTAINER, AND THAT IS THE WHOLE POINT.
+          # We compile exactly one file into a bundle everyone else's binaries come
+          # prebuilt in — so this runner's glibc is the only build-machine detail that can
+          # leak into the artifact, and on ubuntu-24.04 (glibc 2.39) it did: r3's vector.so
+          # demanded GLIBC_2.38 (one symbol, __isoc23_strtol) while zonky's own postgres
+          # needs 2.25. The bundle then died at CREATE EXTENSION on Debian 12 and Ubuntu
+          # 22.04 — two of the commonest Linux installs there are.
+          # bullseye is glibc 2.31 and PGDG publishes postgresql-server-dev-17 for it;
+          # measured, the same source then needs only GLIBC_2.14. build-bundle.sh refuses
+          # to pack a module that needs more than the server it loads into, so this pin and
+          # that check hold the property from both ends.
+          - { rid: linux-x64,     os: ubuntu-24.04,      container: 'debian:bullseye-slim' }
+          - { rid: linux-arm64,   os: ubuntu-24.04-arm,  container: 'debian:bullseye-slim' }
+          - { rid: win-x64,       os: windows-latest,    container: '' }
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     steps:
+      # FIRST, before checkout: a slim container has no git, and actions/checkout silently
+      # falls back to a tarball download without it — which works, but leaves the build
+      # depending on a fallback nobody chose.
+      - name: Install build prerequisites (Linux container)
+        if: runner.os == 'Linux'
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            ca-certificates curl gnupg lsb-release git make gcc binutils unzip xz-utils
+
       - uses: actions/checkout@v7
 
       - name: Install PostgreSQL 17 server headers (macOS)
@@ -43,19 +65,20 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install postgresql17 --no-progress -y --params '/Password:postgres'
 
-      # Ubuntu 24.04 ships PostgreSQL 16 in its own archive; 17 needs the PGDG repo,
-      # which publishes both amd64 and arm64 for noble.
+      # PGDG publishes PostgreSQL 17 for bullseye as well as for noble, which is what makes
+      # the old-container pin above possible at all. No sudo: a container job runs as root
+      # and slim images do not ship sudo.
       - name: Install PostgreSQL 17 server headers (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo install -d /usr/share/postgresql-common/pgdg
-          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+          install -d /usr/share/postgresql-common/pgdg
+          curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
             https://www.postgresql.org/media/keys/ACCC4CF8.asc
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
             https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
-            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq postgresql-server-dev-17 postgresql-client-17
+            > /etc/apt/sources.list.d/pgdg.list
+          apt-get update -qq
+          apt-get install -y -qq postgresql-server-dev-17 postgresql-client-17
 
       # Both build scripts refuse to pack a bundle they could not load: they start the
       # bundle's OWN server, do CREATE EXTENSION vector into template1, and check an hnsw
@@ -63,7 +86,17 @@ jobs:
       # user's laptop.
       - name: Build and verify (unix)
         if: runner.os != 'Windows'
-        run: ./build-bundle.sh ${{ matrix.rid }}
+        run: |
+          # ⚠ A CONTAINER JOB RUNS AS ROOT, AND initdb REFUSES TO RUN AS ROOT. The verification
+          # above is not a formality — it starts the bundle's OWN server — so the build itself
+          # has to be an ordinary user. macOS runs as `runner` already and takes the else branch.
+          if [ "$(id -u)" = "0" ]; then
+            useradd -m builder
+            chown -R builder .
+            runuser -u builder -- ./build-bundle.sh ${{ matrix.rid }}
+          else
+            ./build-bundle.sh ${{ matrix.rid }}
+          fi
 
       - name: Build and verify (Windows)
         if: runner.os == 'Windows'

@@ -76,6 +76,26 @@ bundle cannot back up or restore a database. That is a property of these binarie
 compile-time triple is baked into both slices of a universal binary. The server really is running arm64. Never infer the
 running architecture from it.
 
+**A Linux bundle runs on glibc 2.25 and newer**, and it is the ONE compiled file in it that decides this. zonky's
+binaries are built for a very old glibc; pgvector is the only thing we compile, so the machine that builds it is the
+only build-machine detail that can leak into a redistributable artifact.
+
+> It leaked in **r3**, and the failure is worth recognising. Built on `ubuntu-24.04` (glibc 2.39), `vector.so`
+> demanded `GLIBC_2.38` — a single symbol, `__isoc23_strtol` — while `bin/postgres` needed only `2.25`. On Debian 12
+> and Ubuntu 22.04 the server therefore started and then died inside `CREATE EXTENSION`:
+> `could not load library ".../vector.so": version 'GLIBC_2.38' not found`. Two of the commonest Linux installs
+> there are, locked out of the local runtime, by a build detail nothing checked.
+>
+> A compile flag will not fix it: `__isoc23_strtol` comes from glibc 2.38's own `stdlib.h`, which enables the C23
+> remap whenever `_GNU_SOURCE` is defined — and PostgreSQL always defines it. `-std=gnu17` changes nothing
+> (measured). **The build environment is the fix**: the Linux jobs run in `debian:bullseye-slim` (glibc 2.31), where
+> the same source produces a module needing only `GLIBC_2.14`.
+>
+> And so it cannot happen quietly again, `build-bundle.sh` now REFUSES to pack a module that requires a higher glibc
+> than the `postgres` it will be loaded into. The bar is self-calibrating rather than a constant someone has to
+> remember to raise — the invariant is *our one compiled file must never narrow the platforms the shipped server
+> already runs on*.
+
 **ICU major versions differ across platforms** (60 on Linux, 68 on macOS), and collation ordering can shift between ICU
 majors. Prefer the builtin provider above; reach for `--locale-provider=icu` only if you need real dictionary collation,
 and then pin the ICU locale explicitly.
@@ -94,7 +114,12 @@ for every release within a major.
 
 The script **refuses to pack a bundle it could not load**: before creating the tarball it starts the bundle's own
 server, runs `CREATE EXTENSION vector`, asserts an HNSW nearest-neighbour scan returns the expected row, and asserts the
-database really came up as builtin `C.UTF-8`.
+database really came up as builtin `C.UTF-8`. On Linux it also refuses to pack a module whose glibc floor is higher
+than the shipped server's — see *Things worth knowing*.
+
+⚠ **Build the Linux bundles in `debian:bullseye-slim`**, as the workflow does, not on a modern host; a build on a
+current distro is refused by that check rather than shipped. And note that `initdb` refuses to run as root, so a
+container build must drop to an ordinary user before running this script — the smoke test starts a real server.
 
 Versions are pinned in `versions.env`. Releases are cut by `.github/workflows/build.yml`; bump `BUNDLE_REVISION` to
 republish, since the publish step refuses to overwrite an existing tag.
