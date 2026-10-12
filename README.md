@@ -120,6 +120,9 @@ than the shipped server's — see *Things worth knowing*.
 ⚠ **Build the Linux bundles in `debian:bullseye-slim`**, as the workflow does, not on a modern host; a build on a
 current distro is refused by that check rather than shipped. And note that `initdb` refuses to run as root, so a
 container build must drop to an ordinary user before running this script — the smoke test starts a real server.
+Bullseye is archived (its LTS ended 2026-08-31), so the workflow takes its packages from `archive.debian.org` and
+the PostgreSQL headers from `apt-archive.postgresql.org` — the live mirrors no longer serve them. Do not "fix" that by
+moving to a newer Debian: the old glibc is the point.
 
 Versions are pinned in `versions.env`. Releases are cut by `.github/workflows/build.yml`; bump `BUNDLE_REVISION` to
 republish, since the publish step refuses to overwrite an existing tag.

@@ -45,9 +45,25 @@ jobs:
       # FIRST, before checkout: a slim container has no git, and actions/checkout silently
       # falls back to a tarball download without it — which works, but leaves the build
       # depending on a fallback nobody chose.
+      #
+      # ⚠ BULLSEYE IS ARCHIVED, SO ITS PACKAGES COME FROM archive.debian.org. Debian 11's LTS
+      # ended 2026-08-31 and its packages are moving off the live mirrors: measured
+      # 2026-10-12, deb.debian.org still served bullseye-security's INDEX while every file it
+      # listed (perl, python3.9, expat, sqlite3) answered 404, so `apt-get install` failed on
+      # both Linux runners. archive.debian.org holds the same suites, index and files alike.
+      # Staying on bullseye is deliberate — it is what keeps the glibc floor (see the matrix);
+      # moving to bookworm would raise it. Archived suites carry no Valid-Until today, and
+      # the apt setting below keeps one added later from expiring the build.
       - name: Install build prerequisites (Linux container)
         if: runner.os == 'Linux'
         run: |
+          rm -f /etc/apt/sources.list.d/debian.sources
+          cat > /etc/apt/sources.list <<'EOF'
+          deb http://archive.debian.org/debian bullseye main
+          deb http://archive.debian.org/debian bullseye-updates main
+          deb http://archive.debian.org/debian-security bullseye-security main
+          EOF
+          echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archived-release
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends \
             ca-certificates curl gnupg lsb-release git make gcc binutils unzip xz-utils
@@ -68,6 +84,11 @@ jobs:
       # PGDG publishes PostgreSQL 17 for bullseye as well as for noble, which is what makes
       # the old-container pin above possible at all. No sudo: a container job runs as root
       # and slim images do not ship sudo.
+      # ⚠ …and PGDG has ARCHIVED bullseye too: apt.postgresql.org answers 404 for
+      # bullseye-pgdg (measured 2026-10-12), apt-archive.postgresql.org serves it, signed by
+      # the same key (ACCC4CF8, verified). Its newest server-dev-17 is 17.9 — fine, since a
+      # module's ABI check compares the MAJOR only (see README, Building), and the build
+      # below proves it by loading the module into the bundle's own 17.10 server.
       - name: Install PostgreSQL 17 server headers (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -75,7 +96,7 @@ jobs:
           curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
             https://www.postgresql.org/media/keys/ACCC4CF8.asc
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
-            https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            https://apt-archive.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             > /etc/apt/sources.list.d/pgdg.list
           apt-get update -qq
           apt-get install -y -qq postgresql-server-dev-17 postgresql-client-17
