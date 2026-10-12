@@ -129,6 +129,14 @@ local rebuild.
 
 ### `win-x64`
 
+**It carries the Microsoft Visual C++ runtime (revision 5 on).** zonky's Windows Postgres is an MSVC build: its
+programs import `VCRUNTIME140.dll`, and ICU imports `MSVCP140.dll`. `build-bundle.ps1` copies `vcruntime140.dll`,
+`vcruntime140_1.dll` and `msvcp140.dll` from the build's own Visual Studio (`%VCToolsRedistDir%x64\Microsoft.VC14x.CRT`)
+into `bin\`, refuses to pack if any program in the bundle imports a Visual C++ runtime DLL the bundle does not carry,
+and — in the smoke test — refuses unless the running server loaded them **from the bundle**, not from `System32`. A
+build runner always has Visual Studio, so without that last check a bundle that needs the redistributable looks
+exactly like one that does not.
+
 Windows uses a separate build script, **`build-bundle.ps1`** (PowerShell), because pgvector there needs an MSVC
 `nmake /F Makefile.win` build rather than the PGXS path the other platforms share — and the runner needs a PostgreSQL 17
 install (`-PgRoot`) for headers, import libs and `psql`. It is LGPL-free like the others: zonky's Windows Postgres

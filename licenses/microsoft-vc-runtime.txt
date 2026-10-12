@@ -1,0 +1,25 @@
+Microsoft Visual C++ runtime (Windows bundle only)
+
+The Windows bundle carries three files of the Microsoft Visual C++ runtime beside its programs, in bin\:
+
+  vcruntime140.dll
+  vcruntime140_1.dll
+  msvcp140.dll
+
+They are Microsoft's, copyright (c) Microsoft Corporation, and are NOT open source. They are redistributed here
+unmodified, as "Distributable Code" under the Microsoft Software License Terms for Visual Studio: the "REDIST list"
+those terms refer to names the Visual C++ runtime files of the Microsoft.VC14x.CRT folder.
+
+  Licence terms:  https://visualstudio.microsoft.com/license-terms/
+  REDIST list:    https://learn.microsoft.com/visualstudio/releases/2022/redistribution
+  Deployment:     https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files
+                  ("Install individual redistributable files": the application local folder)
+
+Why they are here: the PostgreSQL programs in this bundle are built with Microsoft's compiler and import
+VCRUNTIME140.dll (ICU also imports MSVCP140.dll). Without these files beside them the server starts only on a
+Windows where the "Microsoft Visual C++ Redistributable" happens to be installed.
+
+They are taken from the redistributable folder of the Visual Studio that built the bundle
+(%VCToolsRedistDir%x64\Microsoft.VC14x.CRT). Windows prefers a newer copy installed system-wide only for programs
+that do not carry their own; a bundle that carries its own keeps the version it was tested with. The Universal C
+Runtime (ucrtbase.dll, the api-ms-win-crt-* set) is part of Windows 10 and later and is not carried.

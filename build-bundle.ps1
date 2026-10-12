@@ -134,12 +134,70 @@ API char *libintl_bind_textdomain_codeset(const char *d, const char *cs){ (void)
   if ((Deps "$PGTREE\bin\libintl-9.dll") -contains 'libiconv-2.dll') { throw "the stub libintl still imports libiconv." }
   Write-Host "LGPL-free: libintl replaced with a no-op stub; libiconv removed"
 
+  # --- Microsoft Visual C++ runtime, app-local --------------------------------
+  step "Carrying the Microsoft Visual C++ runtime beside the binaries (app-local)"
+  # zonky's Windows Postgres is an MSVC build: postgres.exe, initdb.exe, pg_ctl.exe and nearly every DLL import
+  # VCRUNTIME140.dll, and ICU (icuuc/icuio/icutu) imports MSVCP140.dll -- and the tree carries NEITHER. Revisions
+  # 3 and 4 shipped that way, so on a Windows with no "Visual C++ Redistributable" installed the server could not
+  # start at all ("VCRUNTIME140.dll was not found"), before a line of ours ran. Most machines have the
+  # redistributable from other software; a clean one does not, and the smoke test below could never see it,
+  # because every build runner has Visual Studio.
+  #
+  # Windows looks for a DLL in the folder of the EXE that is starting before it looks in System32, so the three
+  # files beside the three programs (bin\) are what they load -- and what the extension DLLs under lib\ get too,
+  # since they are loaded INTO postgres.exe, which already holds them. msvcp140.dll itself imports
+  # vcruntime140_1.dll, which is why the third file comes along though nothing of zonky's names it.
+  #
+  # They are Microsoft's files, taken unmodified from this Visual Studio's own redistributable folder
+  # (%VCToolsRedistDir%x64\Microsoft.VC14x.CRT -- the folder Microsoft documents for app-local deployment), under
+  # the "Distributable Code" terms of the Visual Studio licence (the REDIST list names these files). The exact
+  # folder and file versions are written into the bundle (LICENSES\microsoft-vc-runtime.txt).
+  if (-not $env:VCToolsRedistDir) { throw "VCToolsRedistDir is not set after vcvars64: cannot locate the redistributable CRT." }
+  $crtDir = Get-ChildItem (Join-Path $env:VCToolsRedistDir 'x64') -Directory -Filter 'Microsoft.VC*.CRT' |
+              Sort-Object Name -Descending | Select-Object -First 1
+  if (-not $crtDir) { throw "no x64\Microsoft.VC*.CRT folder under $($env:VCToolsRedistDir)." }
+  $crtFiles = @('vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll')
+  $crtNote  = @()
+  foreach ($f in $crtFiles) {
+    $src = Join-Path $crtDir.FullName $f
+    if (-not (Test-Path $src)) { throw "the redistributable folder $($crtDir.FullName) has no $f." }
+    Copy-Item $src (Join-Path $PGTREE 'bin') -Force
+    $ver = (Get-Item $src).VersionInfo.FileVersion
+    $sha = (Get-FileHash $src -Algorithm SHA256).Hash.ToLower()
+    $crtNote += "  bin\$f   file version $ver   sha256 $sha"
+    Write-Host "  $f  $ver"
+  }
+
+  # The closure again, now that the runtime is in the tree: every C/C++ runtime DLL the three programs (and
+  # pgvector) reach must be one the bundle CARRIES. This is the check revisions 3 and 4 did not have -- it reads
+  # the import tables, so it does not depend on what happens to be installed on the machine that builds.
+  $bundled = @{}
+  Get-ChildItem $PGTREE -Recurse -Filter *.dll | ForEach-Object { $bundled[$_.Name.ToLower()] = $_.FullName }
+  $reach  = [System.Collections.Generic.HashSet[string]]::new()
+  $queue  = [System.Collections.Generic.Queue[string]]::new()
+  $absent = @()
+  foreach ($r in 'bin\postgres.exe','bin\initdb.exe','bin\pg_ctl.exe','lib\vector.dll') { $queue.Enqueue((Join-Path $PGTREE $r)) }
+  while ($queue.Count -gt 0) {
+    $from = $queue.Dequeue()
+    foreach ($d in (Deps $from)) {
+      if ($bundled.ContainsKey($d)) { if ($reach.Add($d)) { $queue.Enqueue($bundled[$d]) } }
+      elseif ($d -match '^(vcruntime|msvcp|concrt|vcomp|vccorlib|msvcr)\d') { $absent += "$d (imported by $(Split-Path $from -Leaf))" }
+    }
+  }
+  if ($absent) { throw "the bundle's programs import a Visual C++ runtime DLL the bundle does not carry: $($absent -join '; ')" }
+  foreach ($f in 'vcruntime140.dll','msvcp140.dll') { if (-not $reach.Contains($f)) { throw "$f was copied in but nothing in the bundle reaches it -- the runtime the programs need has changed; re-read their imports." } }
+  if (-not $reach.Contains('vcruntime140_1.dll')) { Write-Host "note: nothing reaches vcruntime140_1.dll in this build (msvcp140.dll usually imports it); carried all the same." }
+  foreach ($f in $crtFiles) { if (-not (Test-Path (Join-Path $PGTREE "bin\$f"))) { throw "bin\$f is missing from the tree." } }
+  Write-Host "Visual C++ runtime carried app-local: $($crtFiles -join ', ') -- and nothing in the closure imports one that is not"
+
   # --- licences (no LGPL ships) ----------------------------------------------
   step "Baking third-party licence notices"
   New-Item -ItemType Directory -Force -Path "$PGTREE\LICENSES" | Out-Null
   Copy-Item "$PSScriptRoot\licenses\*.txt" "$PGTREE\LICENSES\"
   Copy-Item "$WORK\pgvector\LICENSE" "$PGTREE\LICENSES\pgvector.txt"
   Copy-Item "$PSScriptRoot\THIRD-PARTY-NOTICES.md" "$PGTREE\"
+  Add-Content -Path "$PGTREE\LICENSES\microsoft-vc-runtime.txt" -Encoding ascii -Value (@(
+    '', 'The files in this bundle, as built:', "  taken from: $($crtDir.FullName)") + $crtNote)
 
   # --- smoke test -------------------------------------------------------------
   step "Smoke test: the bundle's OWN server must load the extension"
@@ -153,6 +211,22 @@ API char *libintl_bind_textdomain_codeset(const char *d, const char *cs){ (void)
   & "$PGTREE\bin\pg_ctl.exe" -D $DATA -w -l "$WORK\pg.log" -o "-p $PORT -h 127.0.0.1" start
   if ($LASTEXITCODE -ne 0) { if (Test-Path "$WORK\pg.log") { Get-Content "$WORK\pg.log" }; throw "server failed to start." }
   function q($db,$sql){ (& $psql -h 127.0.0.1 -p $PORT -U postgres -d $db -v ON_ERROR_STOP=1 -tAc $sql).Trim() }
+  # The server that just started must be running on the runtime THIS BUNDLE carries, not the one Visual Studio put in
+  # System32 -- a runner always has that one, so "it started" proves nothing about a machine without it. Read from
+  # the running process: which file each runtime DLL was loaded from.
+  $binDir = (Resolve-Path (Join-Path $PGTREE 'bin')).Path
+  $server = Get-Process postgres -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($binDir, [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
+  if (-not $server) { & "$PGTREE\bin\pg_ctl.exe" -D $DATA -w stop | Out-Null; throw "no postgres.exe of this bundle is running after pg_ctl start." }
+  $loaded = @{}
+  foreach ($m in $server.Modules) { $loaded[$m.ModuleName.ToLower()] = $m.FileName }
+  foreach ($f in 'vcruntime140.dll','msvcp140.dll') {
+    if (-not $loaded.ContainsKey($f)) { & "$PGTREE\bin\pg_ctl.exe" -D $DATA -w stop | Out-Null; throw "the running server has not loaded $f at all -- its imports are not what this script reads." }
+    if (-not $loaded[$f].StartsWith($binDir, [StringComparison]::OrdinalIgnoreCase)) {
+      & "$PGTREE\bin\pg_ctl.exe" -D $DATA -w stop | Out-Null
+      throw "the running server loaded $f from $($loaded[$f]), not from the bundle's bin\ -- on a machine without the redistributable it would not start."
+    }
+  }
+  Write-Host "the running server loaded vcruntime140.dll and msvcp140.dll from the bundle's own bin\"
   try {
     q template1 "CREATE EXTENSION vector;" | Out-Null    # into template1 so clones inherit it
     q postgres  "CREATE DATABASE smoke;"   | Out-Null
@@ -168,7 +242,7 @@ API char *libintl_bind_textdomain_codeset(const char *d, const char *cs){ (void)
   if ($ver -ne $PGV)         { throw "pg_extension says '$ver', expected '$PGV'." }
   if ($loc -ne 'b C.UTF-8')  { throw "locale is '$loc', expected 'b C.UTF-8' (builtin provider)." }
   if ($srt -ne 'A B a b')    { throw "sort order is '$srt', expected code-point order 'A B a b'." }
-  Write-Host "vector $ver loaded, inherited via template1, hnsw scan correct; builtin C.UTF-8; LGPL-free"
+  Write-Host "vector $ver loaded, inherited via template1, hnsw scan correct; builtin C.UTF-8; LGPL-free; VC++ runtime app-local"
 
   # --- pack -------------------------------------------------------------------
   step "Packing"

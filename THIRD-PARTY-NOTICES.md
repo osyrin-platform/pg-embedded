@@ -34,6 +34,15 @@ harmless; omitting one is a compliance bug. The "Platforms" column records where
 | libedit | BSD-3-Clause | `libedit.txt` | macOS | <https://www.thrysoee.dk/editline/> |
 | MIT Kerberos (`krb5`, `gssapi_krb5`, `com_err`, `k5crypto`, `krb5support`) | MIT | `krb5.txt` | macOS | <https://web.mit.edu/kerberos/> |
 | util-linux `libuuid` | BSD-3-Clause | `libuuid-bsd3.txt` | macOS | <https://github.com/util-linux/util-linux> |
+| Microsoft Visual C++ runtime (`vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`) | Microsoft Software License Terms (Visual Studio "Distributable Code") — proprietary, redistributable unmodified | `microsoft-vc-runtime.txt` | Windows | <https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files> |
+
+## The Microsoft Visual C++ runtime (Windows)
+
+As of bundle revision 5 the Windows bundle carries the three Visual C++ runtime files its programs import, beside
+them in `bin\` ("app-local"). Earlier revisions did not, and so started only where the *Microsoft Visual C++
+Redistributable* was already installed. The files are Microsoft's, unmodified, taken from the redistributable folder
+of the Visual Studio that builds the bundle; `LICENSES/microsoft-vc-runtime.txt` in a Windows bundle also records the
+exact folder, file versions and hashes of the build. They are the one component here that is not open source.
 
 ## No LGPL components
 
